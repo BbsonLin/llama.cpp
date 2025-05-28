@@ -91,6 +91,32 @@ class MainViewModel(private val llamaAndroid: LLamaAndroid = LLamaAndroid.instan
         }
     }
 
+    fun loadModelWithCallback(pathToModel: String, onComplete: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            try {
+                llamaAndroid.load(pathToModel)
+                messages += "Successfully loaded: ${java.io.File(pathToModel).name}"
+                onComplete(true)
+            } catch (exc: IllegalStateException) {
+                Log.e(tag, "load() failed", exc)
+                messages += "Failed to load model: ${exc.message}"
+                onComplete(false)
+            }
+        }
+    }
+
+    fun unloadModel() {
+        viewModelScope.launch {
+            try {
+                llamaAndroid.unload()
+                messages += "Model unloaded successfully"
+            } catch (exc: IllegalStateException) {
+                Log.e(tag, "unload() failed", exc)
+                messages += "Failed to unload model: ${exc.message}"
+            }
+        }
+    }
+
     fun updateMessage(newMessage: String) {
         message = newMessage
     }
