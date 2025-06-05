@@ -5,6 +5,7 @@ import android.app.ActivityManager
 import android.app.DownloadManager
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -12,6 +13,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.StrictMode
 import android.os.StrictMode.VmPolicy
+import android.provider.Settings
 import android.text.format.Formatter
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -69,15 +71,40 @@ class MainActivity(
         val granted = permissions.entries.all { it.value }
         if (granted) {
             viewModel.log("Storage permissions granted")
+            // Check if we still need MANAGE_EXTERNAL_STORAGE for Android 11+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+                requestManageExternalStoragePermission()
+            }
         } else {
             viewModel.log("Storage permissions denied - scanning will be limited to app directory")
+        }
+    }
+
+    // For Android 11+ MANAGE_EXTERNAL_STORAGE permission
+    private val manageExternalStorageLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Environment.isExternalStorageManager()) {
+                viewModel.log("All files access permission granted")
+            } else {
+                viewModel.log("All files access permission denied - limited file access")
+            }
         }
     }
 
     private fun checkAndRequestPermissions() {
         val permissions = mutableListOf<String>()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        // For Android 13+ (API 33+), we need different permissions
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+ uses READ_MEDIA_* permissions instead of READ_EXTERNAL_STORAGE
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            // Android 6+ but below 13
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
                 != PackageManager.PERMISSION_GRANTED) {
                 permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
@@ -91,6 +118,41 @@ class MainActivity(
 
         if (permissions.isNotEmpty()) {
             requestPermissionLauncher.launch(permissions.toTypedArray())
+        } else {
+            // If basic permissions are granted, check for MANAGE_EXTERNAL_STORAGE on Android 11+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+                requestManageExternalStoragePermission()
+            }
+        }
+    }
+
+    private fun requestManageExternalStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            viewModel.log("Requesting all files access permission for broader file scanning...")
+            try {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.data = Uri.parse("package:$packageName")
+                manageExternalStorageLauncher.launch(intent)
+            } catch (e: Exception) {
+                viewModel.log("Error requesting all files access: ${e.message}")
+                // Fallback to general manage all files settings
+                val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                manageExternalStorageLauncher.launch(intent)
+            }
+        }
+    }
+
+    private fun hasStoragePermissions(): Boolean {
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                // Android 11+ prefers MANAGE_EXTERNAL_STORAGE for full access
+                Environment.isExternalStorageManager() || 
+                ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
+                ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+            }
+            else -> true // Permissions granted by default on older Android versions
         }
     }
 
@@ -111,32 +173,38 @@ class MainActivity(
         }
 
         // Only scan public directories if we have permissions
-        val hasStoragePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true // Permissions granted by default on older Android versions
-        }
-
-        if (hasStoragePermission) {
+        if (hasStoragePermissions()) {
+            viewModel.log("Storage permissions available - scanning public directories")
+            
             // Scan Downloads directory
             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (downloadsDir.exists()) {
+            if (downloadsDir?.exists() == true) {
                 ggufFiles.addAll(findGgufFiles(downloadsDir))
             }
 
             // Scan Documents directory
             val documentsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
-            if (documentsDir.exists()) {
+            if (documentsDir?.exists() == true) {
                 ggufFiles.addAll(findGgufFiles(documentsDir))
             }
 
-            // Also scan the root of external storage
-            val externalStorage = Environment.getExternalStorageDirectory()
-            if (externalStorage.exists()) {
-                ggufFiles.addAll(findGgufFiles(externalStorage))
+            // For Android 11+ with MANAGE_EXTERNAL_STORAGE, we can scan broader areas
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+                val externalStorage = Environment.getExternalStorageDirectory()
+                if (externalStorage?.exists() == true) {
+                    // Only scan common folders to avoid overwhelming results
+                    val commonFolders = listOf("Download", "Documents", "Models", "AI")
+                    commonFolders.forEach { folderName ->
+                        val folder = File(externalStorage, folderName)
+                        if (folder.exists()) {
+                            ggufFiles.addAll(findGgufFiles(folder))
+                        }
+                    }
+                }
             }
         } else {
-            viewModel.log("Storage permission needed to scan Downloads and Documents folders")
+            viewModel.log("Storage permissions denied - scanning will be limited to app directory")
+            viewModel.log("To access files in Downloads/Documents, please grant storage permissions")
         }
 
         return ggufFiles.distinctBy { it.absolutePath }
@@ -218,7 +286,9 @@ class MainActivity(
                         clipboardManager,
                         downloadManager,
                         models,
-                        onScanGgufFiles = { scanForGgufFiles() }
+                        onScanGgufFiles = { scanForGgufFiles() },
+                        onRequestPermissions = { checkAndRequestPermissions() },
+                        hasStoragePermissions = { hasStoragePermissions() }
                     )
                 }
 
@@ -233,7 +303,9 @@ fun MainCompose(
     clipboard: ClipboardManager,
     dm: DownloadManager,
     models: List<Downloadable>,
-    onScanGgufFiles: () -> List<File>
+    onScanGgufFiles: () -> List<File>,
+    onRequestPermissions: () -> Unit,
+    hasStoragePermissions: () -> Boolean
 ) {
     var discoveredGgufFiles by remember { mutableStateOf<List<File>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
@@ -344,6 +416,22 @@ fun MainCompose(
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(16.dp, 0.dp, 16.dp, 8.dp)
                     )
+
+                    // Permission request button (show if permissions not granted)
+                    if (!hasStoragePermissions()) {
+                        Button(
+                            onClick = { onRequestPermissions() },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        ) {
+                            Text("Grant Storage Permissions")
+                        }
+                        Text(
+                            "Storage permissions are required to scan files outside the app directory.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(16.dp, 0.dp, 16.dp, 8.dp)
+                        )
+                    }
 
                     // Scan for existing GGUF files button
                     Row(modifier = Modifier.padding(horizontal = 16.dp)) {
