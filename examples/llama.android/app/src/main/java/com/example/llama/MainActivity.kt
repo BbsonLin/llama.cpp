@@ -68,15 +68,32 @@ class MainActivity(
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val granted = permissions.entries.all { it.value }
-        if (granted) {
-            viewModel.log("Storage permissions granted")
-            // Check if we still need MANAGE_EXTERNAL_STORAGE for Android 11+
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-                requestManageExternalStoragePermission()
+        permissions.forEach { (permission, granted) ->
+            viewModel.log("Permission $permission: ${if (granted) "GRANTED" else "DENIED"}")
+        }
+        
+        val allGranted = permissions.entries.all { it.value }
+        val anyGranted = permissions.entries.any { it.value }
+        
+        when {
+            allGranted -> {
+                viewModel.log("All requested storage permissions granted")
+                // Check if we still need MANAGE_EXTERNAL_STORAGE for Android 11+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+                    requestManageExternalStoragePermission()
+                }
             }
-        } else {
-            viewModel.log("Storage permissions denied - scanning will be limited to app directory")
+            anyGranted -> {
+                viewModel.log("Some storage permissions granted - limited file access available")
+                // Check if we still need MANAGE_EXTERNAL_STORAGE for Android 11+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+                    requestManageExternalStoragePermission()
+                }
+            }
+            else -> {
+                viewModel.log("All storage permissions denied - scanning will be limited to app directory")
+                viewModel.log("For better file access, consider granting storage permissions")
+            }
         }
     }
 
@@ -96,14 +113,28 @@ class MainActivity(
     private fun checkAndRequestPermissions() {
         val permissions = mutableListOf<String>()
 
+        viewModel.log("Checking storage permissions... Android API: ${Build.VERSION.SDK_INT}")
+
         // For Android 13+ (API 33+), we need different permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+ uses READ_MEDIA_* permissions instead of READ_EXTERNAL_STORAGE
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+            viewModel.log("Android 13+ detected - checking media permissions...")
+            // Android 13+ uses READ_MEDIA_* permissions for media files
+            // For GGUF files (which are not media), we primarily need MANAGE_EXTERNAL_STORAGE
+            // But let's also request the media permissions in case users store files in media folders
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)
                 != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+                permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO)
+                != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.READ_MEDIA_VIDEO)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.READ_MEDIA_AUDIO)
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            viewModel.log("Android 6-12 detected - checking legacy storage permissions...")
             // Android 6+ but below 13
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -117,11 +148,15 @@ class MainActivity(
         }
 
         if (permissions.isNotEmpty()) {
+            viewModel.log("Requesting ${permissions.size} permissions: ${permissions.joinToString(", ")}")
             requestPermissionLauncher.launch(permissions.toTypedArray())
         } else {
+            viewModel.log("Basic permissions already granted")
             // If basic permissions are granted, check for MANAGE_EXTERNAL_STORAGE on Android 11+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
                 requestManageExternalStoragePermission()
+            } else {
+                viewModel.log("All storage permissions already available")
             }
         }
     }
@@ -144,8 +179,15 @@ class MainActivity(
 
     private fun hasStoragePermissions(): Boolean {
         return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
+                // Android 13+ - Check for MANAGE_EXTERNAL_STORAGE (preferred) or media permissions
+                Environment.isExternalStorageManager() || 
+                (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED &&
+                 ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED &&
+                 ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED)
+            }
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
-                // Android 11+ prefers MANAGE_EXTERNAL_STORAGE for full access
+                // Android 11-12 - Check for MANAGE_EXTERNAL_STORAGE or READ_EXTERNAL_STORAGE
                 Environment.isExternalStorageManager() || 
                 ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
             }
