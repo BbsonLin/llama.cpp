@@ -49,6 +49,12 @@ class LLamaAndroid {
     private external fun free_batch(batch: Long)
     private external fun new_sampler(): Long
     private external fun free_sampler(sampler: Long)
+    private external fun new_sampler_with_params(
+        topK: Int,
+        topP: Float,
+        temperature: Float,
+        repeatPenalty: Float
+    ): Long
     private external fun bench_model(
         context: Long,
         model: Long,
@@ -92,7 +98,7 @@ class LLamaAndroid {
         }
     }
 
-    suspend fun load(pathToModel: String) {
+    suspend fun load(pathToModel: String, nGpuLayers: Int = 0) {
         withContext(runLoop) {
             when (threadLocalState.get()) {
                 is State.Idle -> {
@@ -109,6 +115,9 @@ class LLamaAndroid {
                     if (sampler == 0L) throw IllegalStateException("new_sampler() failed")
 
                     Log.i(tag, "Loaded model $pathToModel")
+                    if (nGpuLayers > 0) {
+                        Log.i(tag, "GPU layers: $nGpuLayers")
+                    }
                     threadLocalState.set(State.Loaded(model, context, batch, sampler))
                 }
                 else -> throw IllegalStateException("Model already loaded")
@@ -116,18 +125,32 @@ class LLamaAndroid {
         }
     }
 
-    fun send(message: String, formatChat: Boolean = false): Flow<String> = flow {
+    fun send(
+        message: String, 
+        formatChat: Boolean = false,
+        maxTokens: Int = 512,
+        topK: Int = 40,
+        topP: Float = 0.9f,
+        temperature: Float = 0.8f
+    ): Flow<String> = flow {
         when (val state = threadLocalState.get()) {
             is State.Loaded -> {
-                val ncur = IntVar(completion_init(state.context, state.batch, message, formatChat, nlen))
-                while (ncur.value <= nlen) {
-                    val str = completion_loop(state.context, state.batch, state.sampler, nlen, ncur)
+                // Free the old sampler and create a new one with custom parameters
+                free_sampler(state.sampler)
+                val customSampler = new_sampler_with_params(topK, topP, temperature, 1.0f)
+                
+                val ncur = IntVar(completion_init(state.context, state.batch, message, formatChat, maxTokens))
+                while (ncur.value <= maxTokens) {
+                    val str = completion_loop(state.context, state.batch, customSampler, maxTokens, ncur)
                     if (str == null) {
                         break
                     }
                     emit(str)
                 }
                 kv_cache_clear(state.context)
+                
+                // Update state with the new sampler
+                threadLocalState.set(State.Loaded(state.model, state.context, state.batch, customSampler))
             }
             else -> {}
         }

@@ -239,6 +239,7 @@ fun MainCompose(
     var isLoading by remember { mutableStateOf(false) }
     var loadedModelPath by remember { mutableStateOf<String?>(null) }
     var isGgufSectionExpanded by remember { mutableStateOf(true) }
+    var isSettingsExpanded by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
 
@@ -265,6 +266,14 @@ fun MainCompose(
                 }
             }
         }
+
+        // Inference Settings Panel
+        InferenceSettingsPanel(
+            settingsState = viewModel.inferenceSettings,
+            isExpanded = isSettingsExpanded,
+            onToggleExpanded = { isSettingsExpanded = !isSettingsExpanded },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
 
         // Input field
         OutlinedTextField(

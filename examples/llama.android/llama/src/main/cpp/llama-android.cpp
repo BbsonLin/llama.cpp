@@ -322,6 +322,43 @@ Java_android_llama_cpp_LLamaAndroid_new_1sampler(JNIEnv *, jobject) {
 }
 
 extern "C"
+JNIEXPORT jlong JNICALL
+Java_android_llama_cpp_LLamaAndroid_new_1sampler_1with_1params(
+    JNIEnv *, jobject, 
+    jint top_k, 
+    jfloat top_p, 
+    jfloat temperature,
+    jfloat repeat_penalty
+) {
+    auto sparams = llama_sampler_chain_default_params();
+    sparams.no_perf = true;
+    
+    llama_sampler * smpl = llama_sampler_chain_init(sparams);
+    
+    // Add sampling strategies in order
+    if (top_k > 0) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
+    }
+    
+    if (top_p < 1.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
+    }
+    
+    if (temperature != 1.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+    }
+    
+    // Add final sampler (greedy or multinomial)
+    if (temperature <= 0.01f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+    } else {
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(0)); // multinomial
+    }
+
+    return reinterpret_cast<jlong>(smpl);
+}
+
+extern "C"
 JNIEXPORT void JNICALL
 Java_android_llama_cpp_LLamaAndroid_free_1sampler(JNIEnv *, jobject, jlong sampler_pointer) {
     llama_sampler_free(reinterpret_cast<llama_sampler *>(sampler_pointer));

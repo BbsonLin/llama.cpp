@@ -7,7 +7,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 
 class MainViewModel(private val llamaAndroid: LLamaAndroid = LLamaAndroid.instance()): ViewModel() {
@@ -23,6 +26,9 @@ class MainViewModel(private val llamaAndroid: LLamaAndroid = LLamaAndroid.instan
 
     var message by mutableStateOf("")
         private set
+
+    // Add inference settings state
+    val inferenceSettings = InferenceSettingsState()
 
     override fun onCleared() {
         super.onCleared()
@@ -44,13 +50,27 @@ class MainViewModel(private val llamaAndroid: LLamaAndroid = LLamaAndroid.instan
         messages += text
         messages += ""
 
+        // Get current settings for inference
+        val settings = inferenceSettings.toInferenceSettings()
+        
+        // Log inference settings for debugging
+        messages += "Using settings: Tokens=${settings.maxTokens}, Temp=${settings.temperature}, TopK=${settings.topK}, TopP=${settings.topP}, Accel=${settings.accelerator.displayName}"
+
         viewModelScope.launch {
-            llamaAndroid.send(text)
-                .catch {
-                    Log.e(tag, "send() failed", it)
-                    messages += it.message!!
+            llamaAndroid.send(
+                message = text,
+                formatChat = false,
+                maxTokens = settings.maxTokens,
+                topK = settings.topK,
+                topP = settings.topP,
+                temperature = settings.temperature
+            )
+                .catch { exception ->
+                    Log.e(tag, "send() failed", exception)
+                    messages += exception.message!!
                 }
-                .collect { messages = messages.dropLast(1) + (messages.last() + it) }
+                .flowOn(Dispatchers.IO)
+                .collect { token -> messages += token }
         }
     }
 
@@ -82,8 +102,15 @@ class MainViewModel(private val llamaAndroid: LLamaAndroid = LLamaAndroid.instan
     fun load(pathToModel: String) {
         viewModelScope.launch {
             try {
-                llamaAndroid.load(pathToModel)
-                messages += "Loaded $pathToModel"
+                val settings = inferenceSettings.toInferenceSettings()
+                llamaAndroid.load(
+                    pathToModel = pathToModel,
+                    nGpuLayers = settings.nGpuLayers
+                )
+                messages += "Loaded $pathToModel with ${settings.accelerator.displayName}"
+                if (settings.accelerator == AcceleratorType.GPU) {
+                    messages += "GPU Layers: ${settings.nGpuLayers}"
+                }
             } catch (exc: IllegalStateException) {
                 Log.e(tag, "load() failed", exc)
                 messages += exc.message!!
@@ -94,8 +121,16 @@ class MainViewModel(private val llamaAndroid: LLamaAndroid = LLamaAndroid.instan
     fun loadModelWithCallback(pathToModel: String, onComplete: (Boolean) -> Unit) {
         viewModelScope.launch {
             try {
-                llamaAndroid.load(pathToModel)
+                val settings = inferenceSettings.toInferenceSettings()
+                llamaAndroid.load(
+                    pathToModel = pathToModel,
+                    nGpuLayers = settings.nGpuLayers
+                )
                 messages += "Successfully loaded: ${java.io.File(pathToModel).name}"
+                messages += "Accelerator: ${settings.accelerator.displayName}"
+                if (settings.accelerator == AcceleratorType.GPU) {
+                    messages += "GPU Layers: ${settings.nGpuLayers}"
+                }
                 onComplete(true)
             } catch (exc: IllegalStateException) {
                 Log.e(tag, "load() failed", exc)
